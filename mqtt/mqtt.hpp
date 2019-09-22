@@ -9,6 +9,7 @@
 #define MQTT_MQTT_HPP_
 
 #include "mbed.h"
+#include "EthernetInterface.h"
 #include "TCPSocket.h"
 #include <string>
 #include <queue>
@@ -150,26 +151,27 @@ private:
 	};
 public:
 
-	Publisher( const char* client_id, TCPSocket& socket );
+	Publisher( const char* client_id, EthernetInterface& eth, const SocketAddress dst_address );
 	~Publisher() noexcept;
 
-	void Connect();
-	void Disconnect();
 	bool Publish( PubData& pubdata );
-	void Update();
-
-	bool IsConnected() const;
 
 private:
 
+	void update();
+	void connectBrokerIfPubDataExist();
 	void sendConnectPacket( const char* client_id );
 	void checkRecvConnectAckPacket();
+	void resetToMQTTWaitState();
 	void publishQueuedData();
 
-	TCPSocket&               m_Socket;
+	EthernetInterface&      m_Eth;
+	SocketAddress			m_DstAddress;
+	TCPSocket				m_Socket;
 	Timer					m_Timer;
 	const char*             m_ClientID;
 
+	Thread                  m_PubThread;
 	std::queue<PubData>		m_PubData;
 	Mutex					m_QueueMtx;
 	State					m_State;

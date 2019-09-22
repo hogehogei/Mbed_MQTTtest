@@ -249,51 +249,30 @@ uint32_t Message::PayloadsLength() const
 	return m_PayloadLength;
 }
 
-Publisher::Publisher( const char* client_id, TCPSocket& socket )
+Publisher::Publisher( const char* client_id, EthernetInterface& eth, const SocketAddress dst_address )
 :
-	m_Socket( socket ),
+	m_Eth( eth ),
+	m_DstAddress( dst_address ),
+	m_Socket(),
 	m_Timer(),
 	m_ClientID( client_id ),
+	m_PubThread(),
 	m_PubData(),
 	m_QueueMtx(),
 	m_State( MQTTStateWait ),
 	m_PubPktID( 0 )
 {
-	//m_Socket.set_blocking( false );
+	m_PubThread.start( this, &Publisher::update );
 }
 
 Publisher::~Publisher()
-{}
-
-void Publisher::Connect()
 {
-	if( m_State != MQTTStateWait ){
-		return;
-	}
-
-	sendConnectPacket( m_ClientID );
-	m_Timer.reset();
-	m_Timer.start();
-	m_State = MQTTConnectAckWait;
-}
-
-void Publisher::Disconnect()
-{
-	if( !(m_State == MQTTConnectAckWait || m_State == MQTTPubReady) ){
-		return;
-	}
-
-	// Disconnect を通知するパケットを送る必要があるなら送る
-
-	m_State = MQTTStateWait;
+	m_PubThread.terminate();
+	m_Socket.close();
 }
 
 bool Publisher::Publish( PubData& pubdata )
 {
-	if( m_State != MQTTPubReady ){
-		return false;
-	}
-
 	m_QueueMtx.lock();
 	m_PubData.push( pubdata );
 	m_QueueMtx.unlock();
@@ -301,23 +280,49 @@ bool Publisher::Publish( PubData& pubdata )
 	return true;
 }
 
-void Publisher::Update()
+void Publisher::update()
 {
-	switch( m_State ){
-	case MQTTStateWait:
-		break;
-	case MQTTConnectAckWait:
-		checkRecvConnectAckPacket();
-		break;
-	case MQTTPubReady:
-		publishQueuedData();
-		break;
+	while( 1 ){
+		switch( m_State ){
+		case MQTTStateWait:
+			connectBrokerIfPubDataExist();
+			break;
+		case MQTTConnectAckWait:
+			checkRecvConnectAckPacket();
+			break;
+		case MQTTPubReady:
+			publishQueuedData();
+			break;
+		}
 	}
 }
 
-bool Publisher::IsConnected() const
+void Publisher::connectBrokerIfPubDataExist()
 {
-	return m_State == MQTTPubReady;
+	m_QueueMtx.lock();
+	bool is_empty = m_PubData.empty();
+	m_QueueMtx.unlock();
+
+	if( !is_empty ){
+		int result = m_Socket.open( &m_Eth );
+	    if( result == NSAPI_ERROR_OK ){
+	    	printf( "Open TCP socket.\n" );
+
+			result = m_Socket.connect( m_DstAddress );
+			if( result == NSAPI_ERROR_OK ){
+				printf( "TCP connect succeeded.\n" );
+				sendConnectPacket( m_ClientID );
+				m_State = MQTTConnectAckWait;
+			}
+			else {
+				printf( "TCP connect failed. ErrorCode: %d\n", result );
+				m_Socket.close();
+			}
+	    }
+	    else {
+	    	printf( "Could not open TCP socket. ErrorCode: %d\n", result );
+	    }
+	}
 }
 
 void Publisher::sendConnectPacket( const char* client_id )
@@ -326,12 +331,10 @@ void Publisher::sendConnectPacket( const char* client_id )
 	Message connect_pkt( Message::DuplicateOff, Message::QOS_0, Message::RetainOff, connect_hdr.Length() );
 
 	if( connect_pkt.Write( connect_hdr ) ){
-		printf( "connect send.\n");
-		int returncode = m_Socket.send( connect_pkt.Buffer(), connect_pkt.Length() );
-		printf( "return code %d\n", returncode );
-	}
-	else {
-		printf( "connect pkt write Failed.\n");
+		if( m_Socket.send( connect_pkt.Buffer(), connect_pkt.Length() ) < 0 ){
+			printf( "Connect pkt write Failed.\n" );
+			m_State = MQTTStateWait;
+		}
 	}
 
 	m_State = MQTTConnectAckWait;
@@ -367,15 +370,22 @@ void Publisher::checkRecvConnectAckPacket()
 	// 可変ヘッダの長さが2、接続許可(0x00）であればOK
 	if( buf[1] == 2 && buf[3] == 0x00 ){
 		m_State = MQTTPubReady;
+		m_Timer.stop();
 		printf( "CONACK Received. MQTTPubReady.\n" );
 	}
 	else {
 		m_State = MQTTConnectAckWait;
 		if( m_Timer.read_ms() >= sk_ConnectTimeOut_ms ){
 			m_Timer.stop();
-			m_State = MQTTStateWait;
+			resetToMQTTWaitState();
 		}
 	}
+}
+
+void Publisher::resetToMQTTWaitState()
+{
+	m_Socket.close();
+	m_State = MQTTStateWait;
 }
 
 void Publisher::publishQueuedData()
@@ -386,7 +396,7 @@ void Publisher::publishQueuedData()
 		m_QueueMtx.lock();
 		if( m_PubData.empty() ){
 			m_QueueMtx.unlock();
-			return;
+			break;
 		}
 
 		data = m_PubData.front();
@@ -401,10 +411,14 @@ void Publisher::publishQueuedData()
 			int result = m_Socket.send( publish_message.Buffer(), publish_message.Length() );
 			if( result < 0 ){
 				printf( "Send Failed. ErrorCode: %d\n", result );
+				break;
 			}
-			m_State = MQTTStateWait;
+
+			printf( "Publish Succeded.\n" );
 		}
 	}
+
+	resetToMQTTWaitState();
 }
 
 }	// end of namespace mqtt
