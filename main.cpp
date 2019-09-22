@@ -34,44 +34,75 @@ int main()
     
     EthernetInterface eth;
     eth.set_network( "192.168.24.100", "255.255.255.0", "192.168.24.1" );
-    eth.connect();
+    int result = 0;
+    if( (result = eth.connect()) == NSAPI_ERROR_OK ){
+    	printf( "ethernet linkup.\n");
+    }
+    else {
+    	printf( "ethernet linkup failed. ErrorCode: %d\n", result );
+    }
     
     printf("The target IP address is '%s'\n", eth.get_ip_address());
     
     //TCPServer srv;
     TCPSocket clt_sock;
-    //SocketAddress clt_addr;
-    
-    /* Open the server on ethernet stack */
-    //srv.open(&eth);
-    
-    /* Bind the HTTP port (TCP 80) to the server */
-    //srv.bind(eth.get_ip_address(), 1883);
-    
-    /* Can handle 5 simultaneous connections */
-    //srv.listen(5);
-    
-    clt_sock.bind(eth.get_ip_address(), 1883);
-    clt_sock.connect( SocketAddress( "192.168.24.128", 1883 ) );
 
-    mqtt::Publisher publisher( "hogeisan", clt_sock );
+    mqtt::Publisher* publisher = nullptr;
     mqtt::PubData data = { "topic/greeting", "Hello World!" };
     Timer timer;
     timer.start();
 
+    bool is_connected = false;
+    bool is_publish_send = false;
     while (true) {
-        //srv.accept(&clt_sock, &clt_addr);
-        //printf("accept %s:%d\n", clt_addr.get_ip_address(), clt_addr.get_port());
+
     	if( timer.read_ms() > 1000 ){
+#if 1
+			if( !is_connected ){
+			    if( (result = clt_sock.open( &eth )) == NSAPI_ERROR_OK ){
+			    	printf( "Open TCP socket.\n" );
+			    }
+			    else {
+			    	printf( "Could not open TCP socket. ErrorCode: %d\n", result );
+			    }
+
+				int result = clt_sock.connect( "192.168.24.128", 1883 );
+
+				if( result == NSAPI_ERROR_OK ){
+					printf( "TCP connect succeeded.\n" );
+					is_connected = true;
+					publisher = new mqtt::Publisher( "hogeisan", clt_sock );
+				}
+				else {
+					printf( "TCP connect failed. ErrorCode: %d\n", result );
+					clt_sock.close();
+				}
+			}
+			else {
+				if( !publisher->IsConnected() ){
+					printf( "MQTT connect send.\n" );
+					publisher->Connect();
+				}
+				else {
+					printf( "MQTT publish send.\n" );
+					publisher->Publish( data );
+					is_publish_send = true;
+				}
+			}
+#endif
     		timer.reset();
-    		if( !publisher.IsConnected() ){
-    			publisher.Connect();
-    		}
-    		else {
-    			publisher.Publish( data );
-    		}
     	}
 
-        publisher.Update();
+    	if( publisher ){
+    		publisher->Update();
+
+    		if( is_publish_send ){
+    			clt_sock.close();
+    			is_connected = false;
+    			is_publish_send = false;
+    			delete publisher;
+    			publisher = nullptr;
+    		}
+    	}
     }
 }

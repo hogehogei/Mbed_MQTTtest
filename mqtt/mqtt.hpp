@@ -150,7 +150,7 @@ private:
 	};
 public:
 
-	Publisher( const char* client_id, TCPSocket socket );
+	Publisher( const char* client_id, TCPSocket& socket );
 	~Publisher() noexcept;
 
 	void Connect();
@@ -166,7 +166,7 @@ private:
 	void checkRecvConnectAckPacket();
 	void publishQueuedData();
 
-	TCPSocket               m_Socket;
+	TCPSocket&               m_Socket;
 	Timer					m_Timer;
 	const char*             m_ClientID;
 
